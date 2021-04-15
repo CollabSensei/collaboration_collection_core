@@ -1,0 +1,6 @@
+---
+env_user: "{{ ansible_user }}"
+env_password: "{{ ansible_ssh_pass }}"
+env_host: vcloud.wwtatc.local
+env_api_version: 30.0
+env_verify_ssl_certs: false

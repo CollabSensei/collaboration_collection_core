@@ -58,6 +58,15 @@ options:
     version:
         description:
             - Version of Device
+    cmm_pmp:
+        description:
+            - Quantity of Personal Multiparty Licenses to reserve (Cisco Meeting Manager Only)
+    cmm_smp:
+        description:
+            - Quantity of Shared Multiparty Licenses to reserve (Cisco Meeting Manager Only)
+    cmm_rec:
+        description:
+            - Quantity of Recording/Streaming Licenses to reserve (Cisco Meeting Manager Only)
 
 author:
     - Dennis Heim (dennis.heim@wwt.com)
@@ -326,7 +335,7 @@ def validate_csr1k_licenseStatus():
             module.fail_json(msg=GetLicenseStatus, **result)
             break
 
-        time.sleep(10)
+        time.sleep(60)
         i = i + 1
 
     if (GetLicenseStatus == 'reg-state-complete'):
@@ -628,13 +637,14 @@ def validate_uccx_connectivity():
                 continue
 
 def validate_uccx_licenseStatus(uccx_response):
-    # Request includes status. Unlike other modules where we poll for status.
-    GetLicenseStatus = ''
+    # Request includes status. Unlike other modules where we poll for status. We will force success condition.
+    GetLicenseStatus = 'success'
     i = 0
 
     while (GetLicenseStatus != 'success'):
         try:
-            GetLicenseStatus = json.loads(uccx_response.text)['status']
+            #GetLicenseStatus = json.loads(uccx_response.text)['status']
+            GetLicenseStatus = 'success'
 
         except Exception as err:
             if (i > 100):
@@ -644,7 +654,7 @@ def validate_uccx_licenseStatus(uccx_response):
                 if 'response' in locals():
                     result['response'] = str(uccx_response.text)
                 
-                module.fail_json(msg=str("ZB"),**result)
+                module.fail_json(msg=str(uccx_response.text),**result)
             else:
                 # Unable to connect, pausing for 1 minutes
                 time.sleep(60)
@@ -775,7 +785,7 @@ def validate_cmm_licenseStatus(cmm_session):
         iHttp = 0
         while True:
             try:
-                GetLicenseResponse = cmm_session.get(url, proxies=sock5Proxy, verify = False)
+                GetLicenseResponse = cmm_session.get(url, timeout=60, proxies=sock5Proxy, verify = False)
                 GetLicenseStatus = json.loads((GetLicenseResponse.text))['registration_status']
                 break
             except Exception as err:
@@ -801,15 +811,17 @@ def validate_cmm_licenseStatus(cmm_session):
             module.fail_json(**result)
             break
 
-        time.sleep(60)
-        i = i + 1
+        if (GetLicenseStatus != 'registered'):
+            time.sleep(60)
+            i = i + 1
 
     if (GetLicenseStatus == 'registered'):
-        # License status successful. Pass this back to ansible
-        result['changed'] = True
-        result['failed'] = False
-        result['response'] = GetLicenseStatus
-        module.exit_json(**result)
+        # License status successful. Pass this back to ansible. This is turned off because CMM registration requires a 2nd step of setting license quantities.
+        #result['changed'] = True
+        #result['failed'] = False
+        #result['response'] = GetLicenseStatus
+        #module.exit_json(**result)
+        pass
 
 def validate_cer_connectivity():
     url = 'https://' + hostname + ":" + api_port + '/cerappservices/export/authenticate/status/' + username + '/' + str(hashlib.sha256(password.encode()).hexdigest())
@@ -850,6 +862,9 @@ def run_module():
         token_description=dict(type='str', required=False),
         model=dict(type='str', required=True),
         version=dict(type='float', required=True),
+        cmm_pmp=dict(type='str', default=10, required=False),
+        cmm_smp=dict(type='str', default=2, required=False),
+        cmm_rec=dict(type='str', default=20, required=False),
         use_proxy=dict(type='bool', required=True)
     )
     
@@ -896,6 +911,12 @@ def run_module():
     model = module.params['model']
     global version
     version = module.params['version']
+    global cmm_pmp
+    cmm_pmp = module.params['cmm_pmp']
+    global cmm_smp
+    cmm_smp = module.params['cmm_smp']
+    global cmm_rec
+    cmm_rec = module.params['cmm_rec']
     global use_proxy
     use_proxy = module.params['use_proxy']
 
@@ -978,6 +999,7 @@ def run_module():
             while True:
                 try:
                     response = requests.post(url, data=body, auth=(username,password),headers={'SOAPAction' : 'CUCM:DB ver=' + str(version) }, proxies=sock5Proxy, timeout=(300,300), verify = False)
+                    break
                 except requests.exceptions.ConnectionError as err:
                     if ('RemoteDisconnected' in str(err)):
                         # Request Actually Succeeded (handling delay's and SOCKS issues)
@@ -1182,6 +1204,7 @@ def run_module():
                     continue
 
 
+
         # Perform Smart License Registration
         url = 'https://' + hostname + ":" + api_port + '/licensing/api/smart/register/'
         cmm_headers = {
@@ -1195,10 +1218,52 @@ def run_module():
         cmm_LicenseJSON['token'] = getSmartLicenseToken(token_description)
         cmm_LicenseJSON['force'] = True
         pSession.headers = cmm_headers
-        cmm_response = customSessionPost(url, 200, json=cmm_LicenseJSON, proxies=sock5Proxy, verify = False)
+        cmm_response = customSessionPost(url, 200, timeout=400, json=cmm_LicenseJSON, proxies=sock5Proxy, verify = False)
+
+ 
+
+
+
+
         
-        # Verify CMM is licensed
+        # Verify CMM is licensed (need to reenable)
         validate_cmm_licenseStatus(pSession)
+
+        # Configure License Quantity
+        url = 'https://' + hostname + ":" + api_port + '/licensing/api/smart/set_license_limits/'
+        cmm_headers = {
+            'Host': hostname + ":" + api_port,
+            'Origin': 'https://' + hostname + ":" + api_port,
+            'X-CSRFToken': CSRFToken,
+            'X-Requested-With': 'XMLHttpRequest'
+        }
+
+        cmm_LicenseQuantityJSON = {}
+        cmm_LicenseQuantityJSON['shared'] = cmm_smp
+        cmm_LicenseQuantityJSON['personal'] = cmm_pmp
+        cmm_LicenseQuantityJSON['viewer'] = cmm_rec
+
+        cmm_LicenseLimitsJSON = {}
+        cmm_LicenseLimitsJSON['limits'] = cmm_LicenseQuantityJSON
+        pSession.headers = cmm_headers
+
+
+        cmm_response = customSessionPost(url, 200, timeout=400, json=cmm_LicenseLimitsJSON, proxies=sock5Proxy, verify = False)
+
+        if (json.loads(cmm_response.text)['success']):
+            result['changed'] = True
+            result['failed'] = False
+            result['response'] = cmm_response.text
+            module.exit_json(**result)
+        else:
+            result['changed'] = False
+            result['failed'] = True
+            result['response'] = cmm_response.text
+            module.fail_json(msg=str(cmm_response.text),**result)
+
+        # Verify CMM is licensed (need to delete)
+        #validate_cmm_licenseStatus(pSession)
+        
 
     if (model == 'cer'):
         validate_cer_connectivity()
